@@ -1,0 +1,153 @@
+---
+title: "Investigating COVID-19 Virus Trends"
+author: "Debbie Cung"
+date: "2025-09-15"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+### Hypothesis: Increased daily testing rates correlate with a decrease in active cases over time due to early detection and isolation of infected individuals." ###
+
+# Libraries
+```{r}
+library(tidyverse)
+library(lubridate)
+library(zoo)            # for rolling means and na.locf
+library(fixest)         # panel regressions
+library(modelsummary)   # tables
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(pandoc)
+```
+
+# Data Collection & Preprocessing
+```{r}
+# 1) Load original data
+COVID_clean <- readr::read_csv("COVID_tested_worldwide.csv", show_col_types = FALSE)
+
+# 2) Keep national totals; drop high-missing hospitalization fields; parse date
+COVID_clean <- COVID_clean %>%
+  filter(Province_State == "All States") %>%
+  select(-hospitalized, -hospitalizedCurr) %>%
+  mutate(Date = ymd(Date))
+
+# 3) Remove any rows with negative numeric values (data corrections/outliers)
+COVID_clean <- readr::read_csv("COVID_tested_worldwide.csv", show_col_types = FALSE)
+
+# 2) Keep national totals, drop high-missing cols, parse date
+COVID_clean <- COVID_clean %>%
+  filter(Province_State == "All States") %>%
+  select(-hospitalized, -hospitalizedCurr) %>%
+  mutate(Date = ymd(Date))
+
+# 3) Remove any rows with negative numeric values (data corrections/outliers)
+COVID_clean <- COVID_clean %>%
+  filter(if_all(where(is.numeric), ~ .x >= 0))
+
+# 4) Fill missing values per country (forward then backward)
+COVID_clean <- COVID_clean %>%
+  arrange(Country_Region, Date) %>%
+  group_by(Country_Region) %>%
+  mutate(
+    across(where(is.numeric), ~ na.locf(.x, na.rm = FALSE)),
+    across(where(is.numeric), ~ na.locf(.x, fromLast = TRUE, na.rm = FALSE))
+  ) %>%
+  ungroup()
+
+# 5) Smooth noisy series with 7-day rolling averages (for robustness)
+COVID_clean <- COVID_clean %>%
+  group_by(Country_Region) %>%
+  arrange(Date, .by_group = TRUE) %>%
+  mutate(
+    daily_tested_7d   = rollmean(daily_tested,   7, fill = NA, align = "right"),
+    daily_positive_7d = rollmean(daily_positive, 7, fill = NA, align = "right"),
+    active_7d         = rollmean(active,         7, fill = NA, align = "right")
+  ) %>%
+  ungroup()
+
+# 6) Derived variables: growth rates & lagged testing
+COVID_clean <- COVID_clean %>%
+  group_by(Country_Region) %>%
+  arrange(Date, .by_group = TRUE) %>%
+  mutate(
+    growth_active   = (active - lag(active)) / pmax(lag(active), 1),
+    growth_cases    = (daily_positive - lag(daily_positive)) / pmax(lag(daily_positive), 1),
+    growth_active_7 = (active_7d - lag(active_7d)) / pmax(lag(active_7d), 1),
+    growth_cases_7  = (daily_positive_7d - lag(daily_positive_7d)) / pmax(lag(daily_positive_7d), 1),
+    lag1_tests      = lag(daily_tested, 1),
+    lag7_tests      = lag(daily_tested, 7),
+    lag1_tests_7    = lag(daily_tested_7d, 1),
+    lag7_tests_7    = lag(daily_tested_7d, 7)
+  ) %>%
+  ungroup()
+
+# Save cleaned panel
+write_csv(COVID_clean, "COVID_clean_daily_panel.csv")
+```
+
+# Exploratory Data Analysis (EDA)
+```{r}
+# 1) Summary statistics table
+datasummary_skim(
+  COVID_clean %>% select(daily_tested, daily_positive, active, recovered, death),
+  output = "eda_summary.docx"
+)
+
+# 2) Distribution plots (log-scaled histograms, clipped for readability)
+df_long <- COVID_clean %>%
+  pivot_longer(
+    c(daily_tested, daily_positive, active, recovered, death),
+    names_to = "Variable", values_to = "Value"
+  )
+
+p_dist <- ggplot(df_long, aes(x = Value)) +
+  geom_histogram(bins = 50, fill = "steelblue", color = "white") +
+  scale_x_log10() +
+  facet_wrap(~Variable, scales = "free") +
+  theme_minimal(base_size = 12) +
+  labs(title = "Distributions of COVID Variables (log scale)",
+       x = "Log-scaled values", y = "Count")
+
+ggsave("eda_distributions.pdf", p_dist, width = 9, height = 6, dpi = 300)
+
+# 3) Global testing vs active case growth over time
+p_global <- COVID_clean %>%
+  group_by(Date) %>%
+  summarise(
+    tests = sum(daily_tested, na.rm = TRUE),
+    g_act = mean(growth_active, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    tests_sc = tests / max(tests, na.rm = TRUE),
+    g_sc = scales::rescale(g_act, to = c(0, 1))
+  ) %>%
+  ggplot(aes(Date)) +
+  geom_line(aes(y = tests_sc), color = "steelblue", size = 1) +
+  geom_line(aes(y = g_sc), color = "darkred", size = 1, linetype = "dashed") +
+  theme_minimal(base_size = 12) +
+  labs(title = "Global Testing vs Active Case Growth (scaled)",
+       y = "Scaled Value", x = NULL)
+
+ggsave("eda_global_tests_vs_growth.pdf", p_global, width = 9, height = 5, dpi = 300)
+```
+
+# Statistical Analysis (Panel FE)
+```{r}
+
+```
+
+# Visualizations of effects (distributed lags, scatter)
+```{r}
+
+```
+
+# Save analysis-ready outputs
+```{r}
+
+```
